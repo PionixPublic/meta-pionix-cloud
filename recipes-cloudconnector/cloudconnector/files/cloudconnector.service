@@ -1,0 +1,19 @@
+[Unit]
+Description=Pionix Cloud Connector
+Documentation=https://pionix.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cloudconnector
+Group=cloudconnector
+ExecStart=@CC_DIRECTORY@/cloudconnector --config /etc/cloudconnector/cloudconnector.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudconnector
+
+[Install]
+WantedBy=multi-user.target
