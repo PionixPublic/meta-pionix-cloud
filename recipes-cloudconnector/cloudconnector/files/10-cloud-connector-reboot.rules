@@ -1,8 +1,8 @@
-// Authorize the unprivileged 'cloudconnector' user for logind reboot actions
+// Authorize the unprivileged 'cloud-connector' user for logind reboot actions
 // (needed to reboot after an OTA). set-reboot-parameter covers parameterized
 // reboots such as the Raspberry Pi "tryboot" scheme.
 polkit.addRule(function(action, subject) {
-    if (subject.user == "cloudconnector" &&
+    if (subject.user == "cloud-connector" &&
         (action.id == "org.freedesktop.login1.reboot" ||
          action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
          action.id == "org.freedesktop.login1.set-reboot-parameter")) {

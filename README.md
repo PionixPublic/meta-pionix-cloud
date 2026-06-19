@@ -3,25 +3,25 @@
 Yocto layer that installs the Pionix Cloud Connector and its plugins onto a
 device image. It pulls pre-built OCI artifacts (the cloud-connector binary and
 each plugin) from a registry and installs them at the paths you declare in your
-`cloudconnector.yaml`. Compatible with **Kirkstone (4.0)** and **Scarthgap (5.0)**.
+`cloud-connector.yaml`. Compatible with **Kirkstone (4.0)** and **Scarthgap (5.0)**.
 
 ## How it works
 
-The layer reads your `cloudconnector.yaml` at BitBake parse time and derives
+The layer reads your `cloud-connector.yaml` at BitBake parse time and derives
 everything from it. There is no separate Yocto-specific config file — the same
 YAML drives both the Yocto build and the running service.
 
 At parse time it reads:
 
-| `cloudconnector.yaml` key | Used for |
+| `cloud-connector.yaml` key | Used for |
 |---|---|
 | `device.installation.registry` | OCI registry base URL |
 | `device.installation.tag` | Default artifact tag |
-| `device.installation.cloudconnector` | Binary artifact name, install directory, optional `digest`/`config_path` |
+| `device.installation.cloud_connector` | Binary artifact name, install directory, optional `digest`/`config_path` |
 | `device.installation.registry_creds.auths` | Registry auth (Docker `config.json` format) |
-| `cloudconnector.plugins.directory` | Plugin install root |
-| `cloudconnector.plugins.libraries[]` | Plugins with `source.type: oci` |
-| `cloudconnector.mqtt.cloud.tls.client_credentials.directory` | TLS credentials directory (see [Credentials directory](#credentials-directory)) |
+| `cloud_connector.plugins.directory` | Plugin install root |
+| `cloud_connector.plugins.libraries[]` | Plugins with `source.type: oci` |
+| `cloud_connector.mqtt.cloud.tls.client_credentials.directory` | TLS credentials directory (see [Credentials directory](#credentials-directory)) |
 | each plugin's `config.everest.config_dir` / `config_symlink` | EVerest config-switch grant (see [EVerest config switching](#everest-config-switching)) |
 
 `do_fetch_oci` then pulls each artifact with `oras` for the build's
@@ -42,8 +42,8 @@ BBLAYERS += "/path/to/meta-pionix-cloud"
 # Terms: https://www.pionix.com/pionix-license-terms
 LICENSE_FLAGS_ACCEPTED += "PionixCommercialBaseCamp-1.0"
 
-# Path to your cloudconnector.yaml — every other setting comes from this file.
-CLOUDCONNECTOR_CONFIG_FILE = "/path/to/cloudconnector.yaml"
+# Path to your cloud-connector.yaml — every other setting comes from this file.
+CLOUDCONNECTOR_CONFIG_FILE = "/path/to/cloud-connector.yaml"
 ```
 
 **3. Build:**
@@ -59,12 +59,12 @@ to ship it.
 
 | Path | Content |
 |---|---|
-| `{cloudconnector.directory}/` | Binary and bundled files; entrypoint marked executable |
+| `{cloud_connector.directory}/` | Binary and bundled files; entrypoint marked executable |
 | `{plugins.directory}/{qualified-oci-name}/` | Each plugin's files |
-| `{cloudconnector.config_path}` (default `{cloudconnector.directory}/cloudconnector.yaml`) | Your config, copied verbatim |
-| `/usr/bin/cloudconnector` | Wrapper that runs the binary with `--config` set |
-| `${systemd_unitdir}/system/cloudconnector.service` | systemd unit (auto-enabled) |
-| `/etc/tmpfiles.d/cloudconnector-everest.conf` | EVerest config-dir grant, when an EVerest plugin is present |
+| `{cloud_connector.config_path}` (default `{cloud_connector.directory}/cloud-connector.yaml`) | Your config, copied verbatim |
+| `/usr/bin/cloud-connector` | Wrapper that runs the binary with `--config` set |
+| `${systemd_unitdir}/system/cloud-connector.service` | systemd unit (auto-enabled) |
+| `/etc/tmpfiles.d/cloud-connector-everest.conf` | EVerest config-dir grant, when an EVerest plugin is present |
 
 Plugins install under their **qualified OCI name**. If the image name already
 starts with a registry (its first path segment contains `.` or `:`), it is used
@@ -73,17 +73,17 @@ daemon derives at runtime, so the names must agree.
 
 ## Service account
 
-The recipe creates a system user and group `cloudconnector`. The service runs as
+The recipe creates a system user and group `cloud-connector`. The service runs as
 that user, not root. This shapes how two directories are handled.
 
 ### Credentials directory
 
-`cloudconnector.mqtt.cloud.tls.client_credentials.directory` holds the TLS client
+`cloud_connector.mqtt.cloud.tls.client_credentials.directory` holds the TLS client
 certificate the device enrolls. The service user must be able to write there.
 
 - **Under `/var/lib/`** (recommended, e.g. `/var/lib/cloud-connector/certs`): the
   systemd unit gets a `StateDirectory=` entry. systemd creates the directory and
-  chowns it to the `cloudconnector` user on every start. It survives a volatile
+  chowns it to the `cloud-connector` user on every start. It survives a volatile
   `/var` and a factory reset. The subdirectory name is yours to choose.
 - **Anywhere else**: the layer does **not** create it or change its permissions.
   You own its existence and ownership. The build prints a warning naming the path.
@@ -92,8 +92,8 @@ certificate the device enrolls. The service user must be able to write there.
 
 The EVerest plugin switches the active EVerest config by replacing a symlink at
 runtime. Replacing a symlink needs write access on the directory that contains
-it, so the layer grants the `cloudconnector` group write access to that directory
-via `/etc/tmpfiles.d/cloudconnector-everest.conf`.
+it, so the layer grants the `cloud-connector` group write access to that directory
+via `/etc/tmpfiles.d/cloud-connector-everest.conf`.
 
 The directory is derived per plugin from `config.everest.config_symlink` (its
 parent) or `config.everest.config_dir`. The grant is applied at boot and is
@@ -108,15 +108,15 @@ example after an OTA update. logind authorizes reboots for `uid 0` only unless
 polkit says otherwise.
 
 The `polkit-reboot` PACKAGECONFIG (enabled by default) installs a polkit rule
-that lets the `cloudconnector` user call logind's reboot actions, and pulls
+that lets the `cloud-connector` user call logind's reboot actions, and pulls
 `polkit` into the image. polkit only builds when its distro feature is enabled:
 
 ```
 DISTRO_FEATURES:append = " polkit "
 ```
 
-The service runs `cloudconnector.runtime.reboot_command` from your
-`cloudconnector.yaml` (default `reboot`). On Raspberry Pi + RAUC, point it at a
+The service runs `cloud_connector.runtime.reboot_command` from your
+`cloud-connector.yaml` (default `reboot`). On Raspberry Pi + RAUC, point it at a
 `tryboot` wrapper so the update boots the new slot.
 
 Disable the grant if your image authorizes reboots another way (running as root,
@@ -128,7 +128,7 @@ PACKAGECONFIG:remove:pn-cloudconnector = "polkit-reboot"
 
 ## Registry credentials
 
-For a private registry, put Docker-style auth in `cloudconnector.yaml`. It maps
+For a private registry, put Docker-style auth in `cloud-connector.yaml`. It maps
 directly to a `config.json` `auths` block and is written to a build-local
 `DOCKER_CONFIG`, never to `~/.docker`:
 
@@ -159,7 +159,7 @@ of a tag:
 ```yaml
 device:
   installation:
-    cloudconnector:
+    cloud_connector:
       digest: "cr.pionix.com/pionixpublic/cloud-connector@sha256:..."
 ```
 

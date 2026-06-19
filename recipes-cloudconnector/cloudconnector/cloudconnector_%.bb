@@ -1,7 +1,7 @@
 SUMMARY = "Pionix Cloud Connector"
 DESCRIPTION = "Cloud connectivity service for EV charging devices. \
 Fetches the cloud-connector binary and OCI plugins from a registry, \
-installs them at paths declared in cloudconnector.yaml, and installs \
+installs them at paths declared in cloud-connector.yaml, and installs \
 a systemd unit to run the service."
 HOMEPAGE = "https://pionix.com"
 LICENSE = "CLOSED"
@@ -9,8 +9,8 @@ LICENSE = "CLOSED"
 # _%.bb yields PV="%", which is invalid for RPM packaging. Pin a real version.
 PV = "0.0.1"
 
-SRC_URI = "file://cloudconnector.service \
-           file://10-cloudconnector-reboot.rules \
+SRC_URI = "file://cloud-connector.service \
+           file://10-cloud-connector-reboot.rules \
            "
 
 # polkit-reboot: install a polkit rule authorizing the unprivileged service user
@@ -23,7 +23,7 @@ DEPENDS = "oras-native python3-pyyaml-native"
 
 inherit cloudconnector-install useradd systemd
 
-SYSTEMD_SERVICE:${PN} = "cloudconnector.service"
+SYSTEMD_SERVICE:${PN} = "cloud-connector.service"
 SYSTEMD_AUTO_ENABLE:${PN} = "enable"
 
 # Path vars are set at parse time by cloudconnector-install.bbclass.
@@ -31,17 +31,17 @@ FILES:${PN} = " \
     ${CC_DIRECTORY} \
     ${PLUGINS_DIRECTORY} \
     ${CC_CONFIG_PATH} \
-    /usr/bin/cloudconnector \
-    ${systemd_unitdir}/system/cloudconnector.service \
-    ${sysconfdir}/tmpfiles.d/cloudconnector-everest.conf \
+    /usr/bin/cloud-connector \
+    ${systemd_unitdir}/system/cloud-connector.service \
+    ${sysconfdir}/tmpfiles.d/cloud-connector-everest.conf \
 "
 
 # Installed only under the polkit-reboot PACKAGECONFIG; unlisted paths are fine.
-FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/10-cloudconnector-reboot.rules"
+FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/10-cloud-connector-reboot.rules"
 
-GROUPADD_PARAM:${PN} = "-r cloudconnector"
-USERADD_PARAM:${PN} = "-r -g cloudconnector -s /sbin/nologin -d /nonexistent cloudconnector"
-GROUPMEMS_PARAM:${PN} = "-g cloudconnector -a root"
+GROUPADD_PARAM:${PN} = "-r cloud-connector"
+USERADD_PARAM:${PN} = "-r -g cloud-connector -s /sbin/nologin -d /nonexistent cloud-connector"
+GROUPMEMS_PARAM:${PN} = "-g cloud-connector -a root"
 USERADD_PACKAGES = "${PN}"
 
 # Declare polkitd (matching polkit's own definition) so do_install can chown the

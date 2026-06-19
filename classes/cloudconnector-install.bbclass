@@ -1,11 +1,11 @@
 # cloudconnector-install.bbclass
 #
-# Reads a cloudconnector.yaml config file at recipe-parse time, derives all
+# Reads a cloud-connector.yaml config file at recipe-parse time, derives all
 # install-time values from it, then fetches OCI artifacts with `oras` and
 # installs them at the paths declared in the config.
 #
 # Consumer usage (local.conf or machine config):
-#   CLOUDCONNECTOR_CONFIG_FILE = "/path/to/cloudconnector.yaml"
+#   CLOUDCONNECTOR_CONFIG_FILE = "/path/to/cloud-connector.yaml"
 #
 # The recipe that inherits this class must also set:
 #   DEPENDS += "oras-native python3-pyyaml-native"
@@ -40,14 +40,14 @@ python __anonymous() {
     registry    = inst.get('registry', '')
     default_tag = inst.get('tag', 'stable')
 
-    cc_inst = inst.get('cloudconnector', {})
+    cc_inst = inst.get('cloud_connector', {})
     cc_name = cc_inst.get('name')
     if not cc_name:
-        bb.fatal("device.installation.cloudconnector.name is required in %s" % config_file)
+        bb.fatal("device.installation.cloud_connector.name is required in %s" % config_file)
     cc_dir   = cc_inst.get('directory', '/opt/pionix')
     cc_ref   = cc_inst.get('digest') or ('%s/%s:%s' % (registry, cc_name, cc_inst.get('tag') or default_tag))
 
-    plugins_cfg  = cfg.get('cloudconnector', {}).get('plugins', {})
+    plugins_cfg  = cfg.get('cloud_connector', {}).get('plugins', {})
     plugins_dir  = plugins_cfg.get('directory', '/opt/pionix')
     oci_plugins  = [
         lib for lib in plugins_cfg.get('libraries', [])
@@ -95,7 +95,7 @@ python __anonymous() {
     creds = inst.get('registry_creds', {})
     auths = creds.get('auths', {})
 
-    client_creds_dir = (cfg.get('cloudconnector', {})
+    client_creds_dir = (cfg.get('cloud_connector', {})
                           .get('mqtt', {})
                           .get('cloud', {})
                           .get('tls', {})
@@ -110,16 +110,16 @@ python __anonymous() {
         state_rel = client_creds_dir[len(state_prefix):].strip('/')
     if not state_rel:
         bb.warn(
-            "cloudconnector: client_credentials.directory '%s' is not under "
+            "cloud-connector: client_credentials.directory '%s' is not under "
             "/var/lib/, so the systemd unit cannot provision it via "
             "StateDirectory=. This layer will NOT create it or grant the "
-            "'cloudconnector' user write access. Either move it under /var/lib/ "
+            "'cloud-connector' user write access. Either move it under /var/lib/ "
             "(recommended) or ensure the directory exists and is writable by the "
-            "cloudconnector user yourself." % client_creds_dir
+            "cloud-connector user yourself." % client_creds_dir
         )
     d.setVar('STATE_DIRECTORY_REL', state_rel)
 
-    cc_config_path = cc_inst.get('config_path') or (cc_dir + '/cloudconnector.yaml')
+    cc_config_path = cc_inst.get('config_path') or (cc_dir + '/cloud-connector.yaml')
 
     d.setVar('CC_DIRECTORY',             cc_dir)
     d.setVar('CC_REF',                   cc_ref)
@@ -204,7 +204,7 @@ python do_install() {
     def chmod_entrypoint(src_dir, dst_dir, label):
         oci_json_path = os.path.join(src_dir, 'oci.json')
         if not os.path.isfile(oci_json_path):
-            bb.warn("cloudconnector: %s has no oci.json in its OCI artifact; "
+            bb.warn("cloud-connector: %s has no oci.json in its OCI artifact; "
                     "no entrypoint could be marked executable. The subprocess "
                     "will fail to spawn with 'Permission denied' at runtime."
                     % label)
@@ -213,13 +213,13 @@ python do_install() {
             oci = json.load(f)
         entrypoint = oci.get('entrypoint')
         if not entrypoint:
-            bb.warn("cloudconnector: %s oci.json has no 'entrypoint' field; no "
+            bb.warn("cloud-connector: %s oci.json has no 'entrypoint' field; no "
                     "binary marked executable. The subprocess will fail to "
                     "spawn with 'Permission denied' at runtime." % label)
             return
         ep_path = os.path.join(dst_dir, entrypoint)
         if not os.path.isfile(ep_path):
-            bb.warn("cloudconnector: %s entrypoint '%s' (from oci.json) is not "
+            bb.warn("cloud-connector: %s entrypoint '%s' (from oci.json) is not "
                     "present in the artifact; cannot mark it executable. The "
                     "subprocess will fail to spawn at runtime."
                     % (label, entrypoint))
@@ -247,11 +247,11 @@ python do_install() {
     shutil.copy2(cfg_file, cfg_dst)
 
     # systemd unit → ${systemd_unitdir}/system/
-    unit_src = os.path.join(workdir, 'cloudconnector.service')
+    unit_src = os.path.join(workdir, 'cloud-connector.service')
     systemd_unitdir = d.getVar('systemd_unitdir') or '/lib/systemd'
     unit_dst_dir = os.path.join(destdir, systemd_unitdir.lstrip('/'), 'system')
     os.makedirs(unit_dst_dir, exist_ok=True)
-    unit_dst = os.path.join(unit_dst_dir, 'cloudconnector.service')
+    unit_dst = os.path.join(unit_dst_dir, 'cloud-connector.service')
     shutil.copy2(unit_src, unit_dst)
 
     # Substitute placeholders in the unit file.
@@ -275,29 +275,29 @@ python do_install() {
     # polkit reboot rule (polkit-reboot PACKAGECONFIG only).
     if 'polkit-reboot' in (d.getVar('PACKAGECONFIG') or '').split():
         import subprocess
-        rule_src = os.path.join(workdir, '10-cloudconnector-reboot.rules')
+        rule_src = os.path.join(workdir, '10-cloud-connector-reboot.rules')
         sysconfdir = d.getVar('sysconfdir')
         rules_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'polkit-1', 'rules.d')
         os.makedirs(rules_dir, exist_ok=True)
-        shutil.copy2(rule_src, os.path.join(rules_dir, '10-cloudconnector-reboot.rules'))
+        shutil.copy2(rule_src, os.path.join(rules_dir, '10-cloud-connector-reboot.rules'))
         # rules.d is shared with polkit; match its 0700 polkitd:root or rpm
         # rejects the conflicting dir metadata.
         os.chmod(rules_dir, 0o700)
         subprocess.check_call(['chown', 'polkitd:root', rules_dir])
 
-    # /usr/bin/cloudconnector wrapper: binary on PATH with --config baked in.
+    # /usr/bin/cloud-connector wrapper: binary on PATH with --config baked in.
     wrapper_dir = os.path.join(destdir, 'usr', 'bin')
     os.makedirs(wrapper_dir, exist_ok=True)
-    wrapper_path = os.path.join(wrapper_dir, 'cloudconnector')
+    wrapper_path = os.path.join(wrapper_dir, 'cloud-connector')
     with open(wrapper_path, 'w') as f:
-        f.write('#!/bin/sh\nexec %s/cloudconnector --config %s "$@"\n' % (cc_dir, cc_config_path))
+        f.write('#!/bin/sh\nexec %s/cloud-connector --config %s "$@"\n' % (cc_dir, cc_config_path))
     os.chmod(wrapper_path, 0o755)
 
     # The TLS credentials dir is not created here: under /var/lib it is
     # provisioned by StateDirectory=; elsewhere it is the integrator's (warned
     # at parse time).
 
-    # tmpfiles.d: grant the cloudconnector group write on each EVerest config dir
+    # tmpfiles.d: grant the cloud-connector group write on each EVerest config dir
     # so the daemon can swap the config symlink. Non-recursive.
     everest_dirs = (d.getVar('EVEREST_CONFIG_DIRS') or '').split()
     if everest_dirs:
@@ -306,11 +306,11 @@ python do_install() {
         os.makedirs(tmpfiles_dir, exist_ok=True)
         lines = [
             "# Generated by cloudconnector-install.bbclass.",
-            "# Lets the cloudconnector group write the EVerest config dir(s) so",
+            "# Lets the cloud-connector group write the EVerest config dir(s) so",
             "# the daemon can swap the config symlink (config switching).",
         ]
-        lines += ['z %s 0775 root cloudconnector -' % p for p in everest_dirs]
-        with open(os.path.join(tmpfiles_dir, 'cloudconnector-everest.conf'), 'w') as f:
+        lines += ['z %s 0775 root cloud-connector -' % p for p in everest_dirs]
+        with open(os.path.join(tmpfiles_dir, 'cloud-connector-everest.conf'), 'w') as f:
             f.write('\n'.join(lines) + '\n')
 }
 
