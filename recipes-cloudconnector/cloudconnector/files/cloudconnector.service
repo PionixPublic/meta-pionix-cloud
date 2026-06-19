@@ -8,7 +8,10 @@ Wants=network-online.target
 Type=simple
 User=cloudconnector
 Group=cloudconnector
-ExecStart=@CC_DIRECTORY@/cloudconnector --config /etc/cloudconnector/cloudconnector.yaml
+# Substituted at build time (see cloudconnector-install.bbclass).
+@SUPPLEMENTARY_GROUPS_BLOCK@
+@STATE_DIRECTORY_BLOCK@
+ExecStart=@CC_DIRECTORY@/cloudconnector --config @CC_CONFIG_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

@@ -6,39 +6,52 @@ a systemd unit to run the service."
 HOMEPAGE = "https://pionix.com"
 LICENSE = "CLOSED"
 
-# _%.bb gives PV="%", which breaks RPM spec generation. Pin to a valid version.
+# _%.bb yields PV="%", which is invalid for RPM packaging. Pin a real version.
 PV = "0.0.1"
 
-# The systemd unit template lives alongside this recipe in files/.
-# BitBake's standard do_unpack places it in WORKDIR for do_install to consume.
-SRC_URI = "file://cloudconnector.service"
+SRC_URI = "file://cloudconnector.service \
+           file://10-cloudconnector-reboot.rules \
+           "
 
-# oras-native provides the `oras` command used in do_fetch_oci.
-# python3-pyyaml-native is needed for YAML parsing in __anonymous().
+# polkit-reboot: install a polkit rule authorizing the unprivileged service user
+# to reboot via logind (needed after an OTA). Default on; remove it if the image
+# authorizes reboots another way (root or CAP_SYS_BOOT).
+PACKAGECONFIG ??= "polkit-reboot"
+PACKAGECONFIG[polkit-reboot] = ",,,polkit"
+
 DEPENDS = "oras-native python3-pyyaml-native"
 
-inherit cloudconnector-install
+inherit cloudconnector-install useradd systemd
 
-# CC_DIRECTORY, PLUGINS_DIRECTORY, and CLIENT_CREDENTIALS_DIR are set by
-# cloudconnector-install.bbclass __anonymous() at parse time.
+SYSTEMD_SERVICE:${PN} = "cloudconnector.service"
+SYSTEMD_AUTO_ENABLE:${PN} = "enable"
+
+# Path vars are set at parse time by cloudconnector-install.bbclass.
 FILES:${PN} = " \
     ${CC_DIRECTORY} \
     ${PLUGINS_DIRECTORY} \
-    /etc/cloudconnector \
+    ${CC_CONFIG_PATH} \
+    /usr/bin/cloudconnector \
     ${systemd_unitdir}/system/cloudconnector.service \
-    ${CLIENT_CREDENTIALS_DIR} \
+    ${sysconfdir}/tmpfiles.d/cloudconnector-everest.conf \
 "
 
-# Runtime deps of the pre-compiled OCI artifacts.
-RDEPENDS:${PN} += "libcurl openssl zlib"
+# Installed only under the polkit-reboot PACKAGECONFIG; unlisted paths are fine.
+FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/10-cloudconnector-reboot.rules"
 
-# The binary is pulled pre-compiled from the registry; there is no source to
-# reference debug symbols against, so suppress the QA split.
+GROUPADD_PARAM:${PN} = "-r cloudconnector"
+USERADD_PARAM:${PN} = "-r -g cloudconnector -s /sbin/nologin -d /nonexistent cloudconnector"
+GROUPMEMS_PARAM:${PN} = "-g cloudconnector -a root"
+USERADD_PACKAGES = "${PN}"
+
+# Declare polkitd (matching polkit's own definition) so do_install can chown the
+# shared rules.d to polkitd:root and avoid an rpm dir-ownership conflict.
+USERADD_PARAM:${PN} += "${@bb.utils.contains('PACKAGECONFIG', 'polkit-reboot', '; --system --no-create-home --user-group --home-dir ${sysconfdir}/polkit-1 polkitd', '', d)}"
+
+# Pre-compiled, fully static musl binaries: no .so consumed or provided, no
+# source for debug info, and not to be rewritten (may be digest-pinned). Disable
+# the QA checks that assume a source-built, dynamically-linked package.
 INHIBIT_PACKAGE_STRIP = "1"
 INHIBIT_PACKAGE_DEBUG_SPLIT = "1"
-# Pre-compiled OCI artifacts: shlibs auto-detection can't resolve all providers.
 INSANE_SKIP:${PN} += "file-rdeps"
-# libprotobuf/libprotoc are bundled privately by both the cc binary and each plugin
-# OCI artifact, landing in multiple directories within this package. Exclude them
-# from the global shlib database so Yocto does not see duplicate providers.
 EXCLUDE_FROM_SHLIBS = "1"

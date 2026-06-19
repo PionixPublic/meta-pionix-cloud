@@ -12,8 +12,7 @@
 
 CLOUDCONNECTOR_CONFIG_FILE ?= ""
 
-# Parse the config at recipe-parse time so all variables are available to
-# every task without re-reading the file at execution time.
+# Derive all install-time values from the config at parse time.
 python __anonymous() {
     import json
     import os
@@ -24,6 +23,10 @@ python __anonymous() {
                  "Add it to local.conf or your machine config.")
     if not os.path.isfile(config_file):
         bb.fatal("CLOUDCONNECTOR_CONFIG_FILE does not exist: %s" % config_file)
+
+    # Reparse when the config changes, else BitBake reports non-deterministic
+    # metadata (cached vs. fresh parse disagree).
+    bb.parse.mark_dependency(d, config_file)
 
     try:
         import yaml
@@ -51,16 +54,43 @@ python __anonymous() {
         if lib.get('source', {}).get('type') == 'oci'
     ]
 
-    # Build a fully-qualified ref for each OCI plugin.
+    # Qualified name mirrors Rust's qualify_oci_name(): registry-prefixed unless
+    # the name's first segment already contains '.' or ':'. The daemon uses it as
+    # the on-disk subdir, so the install path must match.
     for plugin in oci_plugins:
         src = plugin['source']
         name = src.get('name', '')
         tag_or_digest = src.get('digest') or src.get('tag') or default_tag
-        # A fully-qualified name (contains '/') overrides the default registry.
-        if '/' in name:
+        first_segment = name.split('/')[0] if name else ''
+        if '.' in first_segment or ':' in first_segment:
+            src['_qualified_name'] = name
             src['_ref'] = '%s:%s' % (name, tag_or_digest)
         else:
+            src['_qualified_name'] = '%s/%s' % (registry, name)
             src['_ref'] = '%s/%s:%s' % (registry, name, tag_or_digest)
+
+    # EVerest config dirs needing group-write (the daemon swaps a symlink there),
+    # derived per plugin from config_symlink/config_dir.
+    everest_dirs = []
+    for lib in plugins_cfg.get('libraries', []):
+        ev = (lib.get('config') or {}).get('everest')
+        if not isinstance(ev, dict):
+            continue
+        symlink = ev.get('config_symlink')
+        target = os.path.dirname(symlink) if symlink else ev.get('config_dir')
+        if target and target not in everest_dirs:
+            everest_dirs.append(target)
+
+    # The systemd plugin reads the journal (needs the systemd-journal group).
+    # Grant it via SupplementaryGroups= only when enabled. Match the OCI image
+    # basename, not the user-chosen id.
+    systemd_plugin_enabled = any(
+        lib.get('enabled', False)
+        and lib.get('source', {}).get('name', '').rsplit('/', 1)[-1].split(':')[0]
+            == 'cc-plugin-systemd'
+        for lib in plugins_cfg.get('libraries', [])
+    )
+    d.setVar('SYSTEMD_JOURNAL_ACCESS', '1' if systemd_plugin_enabled else '')
 
     creds = inst.get('registry_creds', {})
     auths = creds.get('auths', {})
@@ -72,19 +102,37 @@ python __anonymous() {
                           .get('client_credentials', {})
                           .get('directory', '/etc/mosquitto'))
 
+    # StateDirectory= provisions only paths under /var/lib (owned by the service
+    # user at runtime). Outside that tree the integrator owns the dir; warn.
+    state_prefix = '/var/lib/'
+    state_rel = ''
+    if client_creds_dir.startswith(state_prefix):
+        state_rel = client_creds_dir[len(state_prefix):].strip('/')
+    if not state_rel:
+        bb.warn(
+            "cloudconnector: client_credentials.directory '%s' is not under "
+            "/var/lib/, so the systemd unit cannot provision it via "
+            "StateDirectory=. This layer will NOT create it or grant the "
+            "'cloudconnector' user write access. Either move it under /var/lib/ "
+            "(recommended) or ensure the directory exists and is writable by the "
+            "cloudconnector user yourself." % client_creds_dir
+        )
+    d.setVar('STATE_DIRECTORY_REL', state_rel)
+
+    cc_config_path = cc_inst.get('config_path') or (cc_dir + '/cloudconnector.yaml')
+
     d.setVar('CC_DIRECTORY',             cc_dir)
     d.setVar('CC_REF',                   cc_ref)
+    d.setVar('CC_CONFIG_PATH',           cc_config_path)
     d.setVar('PLUGINS_DIRECTORY',        plugins_dir)
     d.setVar('OCI_PLUGINS_JSON',         json.dumps(oci_plugins))
     d.setVar('REGISTRY_AUTHS_JSON',      json.dumps(auths))
     d.setVar('CLIENT_CREDENTIALS_DIR',   client_creds_dir)
+    d.setVar('EVEREST_CONFIG_DIRS',      ' '.join(everest_dirs))
 }
 
 # ── Fetch OCI artifacts ───────────────────────────────────────────────────────
-# We use a separate named task so the standard do_fetch → do_unpack chain
-# still handles the file:// SRC_URI entries (e.g. the systemd unit template).
-# do_fetch_oci runs after do_unpack (WORKDIR is ready) and before do_install.
-
+# Separate task so the standard do_fetch/do_unpack still handle file:// SRC_URI.
 python do_fetch_oci() {
     import json, os, subprocess
 
@@ -119,9 +167,9 @@ python do_fetch_oci() {
     # OCI plugins.
     oci_plugins = json.loads(d.getVar('OCI_PLUGINS_JSON') or '[]')
     for plugin in oci_plugins:
-        plugin_name = plugin['source']['name'].split('/')[-1]
+        qualified_name = plugin['source']['_qualified_name']
         oras_pull(plugin['source']['_ref'],
-                  os.path.join(workdir, 'plugins', plugin_name))
+                  os.path.join(workdir, 'plugins', qualified_name))
 }
 
 addtask do_fetch_oci after do_unpack before do_install
@@ -135,9 +183,10 @@ python do_install() {
 
     workdir  = d.getVar('WORKDIR')
     destdir  = d.getVar('D')
-    cc_dir      = d.getVar('CC_DIRECTORY')
-    plugins_dir = d.getVar('PLUGINS_DIRECTORY')
-    cfg_file    = d.getVar('CLOUDCONNECTOR_CONFIG_FILE')
+    cc_dir          = d.getVar('CC_DIRECTORY')
+    cc_config_path  = d.getVar('CC_CONFIG_PATH')
+    plugins_dir     = d.getVar('PLUGINS_DIRECTORY')
+    cfg_file        = d.getVar('CLOUDCONNECTOR_CONFIG_FILE')
 
     def install_flat(src_dir, dst_dir):
         os.makedirs(dst_dir, exist_ok=True)
@@ -152,24 +201,52 @@ python do_install() {
             elif os.path.isfile(src):
                 shutil.copy2(src, dst)
 
-    # Cloud-connector binary + libs → CC_DIRECTORY
-    cc_dest = os.path.join(destdir, cc_dir.lstrip('/'))
-    install_flat(os.path.join(workdir, 'cc'), cc_dest)
+    def chmod_entrypoint(src_dir, dst_dir, label):
+        oci_json_path = os.path.join(src_dir, 'oci.json')
+        if not os.path.isfile(oci_json_path):
+            bb.warn("cloudconnector: %s has no oci.json in its OCI artifact; "
+                    "no entrypoint could be marked executable. The subprocess "
+                    "will fail to spawn with 'Permission denied' at runtime."
+                    % label)
+            return
+        with open(oci_json_path) as f:
+            oci = json.load(f)
+        entrypoint = oci.get('entrypoint')
+        if not entrypoint:
+            bb.warn("cloudconnector: %s oci.json has no 'entrypoint' field; no "
+                    "binary marked executable. The subprocess will fail to "
+                    "spawn with 'Permission denied' at runtime." % label)
+            return
+        ep_path = os.path.join(dst_dir, entrypoint)
+        if not os.path.isfile(ep_path):
+            bb.warn("cloudconnector: %s entrypoint '%s' (from oci.json) is not "
+                    "present in the artifact; cannot mark it executable. The "
+                    "subprocess will fail to spawn at runtime."
+                    % (label, entrypoint))
+            return
+        os.chmod(ep_path, 0o755)
 
-    # Plugins → PLUGINS_DIRECTORY/<plugin-name>/
+    # Cloud-connector binary + libs → CC_DIRECTORY
+    cc_src = os.path.join(workdir, 'cc')
+    cc_dest = os.path.join(destdir, cc_dir.lstrip('/'))
+    install_flat(cc_src, cc_dest)
+    chmod_entrypoint(cc_src, cc_dest, 'cloud-connector')
+
+    # Plugins → PLUGINS_DIRECTORY/<qualified-oci-name>/ (matches config.rs).
     oci_plugins = json.loads(d.getVar('OCI_PLUGINS_JSON') or '[]')
     for plugin in oci_plugins:
-        plugin_name = plugin['source']['name'].split('/')[-1]
-        plugin_dest = os.path.join(destdir, plugins_dir.lstrip('/'), plugin_name)
-        install_flat(os.path.join(workdir, 'plugins', plugin_name), plugin_dest)
+        qualified_name = plugin['source']['_qualified_name']
+        plugin_src = os.path.join(workdir, 'plugins', qualified_name)
+        plugin_dest = os.path.join(destdir, plugins_dir.lstrip('/'), qualified_name)
+        install_flat(plugin_src, plugin_dest)
+        chmod_entrypoint(plugin_src, plugin_dest, qualified_name)
 
-    # Config YAML → /etc/cloudconnector/
-    cfg_dst_dir = os.path.join(destdir, 'etc', 'cloudconnector')
-    os.makedirs(cfg_dst_dir, exist_ok=True)
-    shutil.copy2(cfg_file, os.path.join(cfg_dst_dir, 'cloudconnector.yaml'))
+    # Config YAML → cc_config_path
+    cfg_dst = os.path.join(destdir, cc_config_path.lstrip('/'))
+    os.makedirs(os.path.dirname(cfg_dst), exist_ok=True)
+    shutil.copy2(cfg_file, cfg_dst)
 
     # systemd unit → ${systemd_unitdir}/system/
-    # The service file is fetched by SRC_URI in the recipe and placed in WORKDIR.
     unit_src = os.path.join(workdir, 'cloudconnector.service')
     systemd_unitdir = d.getVar('systemd_unitdir') or '/lib/systemd'
     unit_dst_dir = os.path.join(destdir, systemd_unitdir.lstrip('/'), 'system')
@@ -177,24 +254,64 @@ python do_install() {
     unit_dst = os.path.join(unit_dst_dir, 'cloudconnector.service')
     shutil.copy2(unit_src, unit_dst)
 
-    # Substitute @CC_DIRECTORY@ placeholder in the unit file.
+    # Substitute placeholders in the unit file.
+    state_rel = d.getVar('STATE_DIRECTORY_REL') or ''
+    if state_rel:
+        state_block = 'StateDirectory=%s\nStateDirectoryMode=0700' % state_rel
+    else:
+        state_block = ''
+    if d.getVar('SYSTEMD_JOURNAL_ACCESS'):
+        supp_groups_block = 'SupplementaryGroups=systemd-journal'
+    else:
+        supp_groups_block = ''
     with open(unit_dst) as f:
         unit = f.read()
     with open(unit_dst, 'w') as f:
-        f.write(unit.replace('@CC_DIRECTORY@', cc_dir))
-}
+        f.write(unit.replace('@CC_DIRECTORY@', cc_dir)
+                    .replace('@CC_CONFIG_PATH@', cc_config_path)
+                    .replace('@STATE_DIRECTORY_BLOCK@', state_block)
+                    .replace('@SUPPLEMENTARY_GROUPS_BLOCK@', supp_groups_block))
 
-# ── Post-install (runs on target at image-creation or first boot) ─────────────
+    # polkit reboot rule (polkit-reboot PACKAGECONFIG only).
+    if 'polkit-reboot' in (d.getVar('PACKAGECONFIG') or '').split():
+        import subprocess
+        rule_src = os.path.join(workdir, '10-cloudconnector-reboot.rules')
+        sysconfdir = d.getVar('sysconfdir')
+        rules_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'polkit-1', 'rules.d')
+        os.makedirs(rules_dir, exist_ok=True)
+        shutil.copy2(rule_src, os.path.join(rules_dir, '10-cloudconnector-reboot.rules'))
+        # rules.d is shared with polkit; match its 0700 polkitd:root or rpm
+        # rejects the conflicting dir metadata.
+        os.chmod(rules_dir, 0o700)
+        subprocess.check_call(['chown', 'polkitd:root', rules_dir])
 
-pkg_postinst_${PN}() {
-#!/bin/sh
-set -e
-groupadd -r cloudconnector 2>/dev/null || true
-useradd -r -g cloudconnector -s /sbin/nologin -d /nonexistent cloudconnector 2>/dev/null || true
-install -d -m 0750 -o cloudconnector -g cloudconnector "${CLIENT_CREDENTIALS_DIR}"
+    # /usr/bin/cloudconnector wrapper: binary on PATH with --config baked in.
+    wrapper_dir = os.path.join(destdir, 'usr', 'bin')
+    os.makedirs(wrapper_dir, exist_ok=True)
+    wrapper_path = os.path.join(wrapper_dir, 'cloudconnector')
+    with open(wrapper_path, 'w') as f:
+        f.write('#!/bin/sh\nexec %s/cloudconnector --config %s "$@"\n' % (cc_dir, cc_config_path))
+    os.chmod(wrapper_path, 0o755)
+
+    # The TLS credentials dir is not created here: under /var/lib it is
+    # provisioned by StateDirectory=; elsewhere it is the integrator's (warned
+    # at parse time).
+
+    # tmpfiles.d: grant the cloudconnector group write on each EVerest config dir
+    # so the daemon can swap the config symlink. Non-recursive.
+    everest_dirs = (d.getVar('EVEREST_CONFIG_DIRS') or '').split()
+    if everest_dirs:
+        sysconfdir = d.getVar('sysconfdir')
+        tmpfiles_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'tmpfiles.d')
+        os.makedirs(tmpfiles_dir, exist_ok=True)
+        lines = [
+            "# Generated by cloudconnector-install.bbclass.",
+            "# Lets the cloudconnector group write the EVerest config dir(s) so",
+            "# the daemon can swap the config symlink (config switching).",
+        ]
+        lines += ['z %s 0775 root cloudconnector -' % p for p in everest_dirs]
+        with open(os.path.join(tmpfiles_dir, 'cloudconnector-everest.conf'), 'w') as f:
+            f.write('\n'.join(lines) + '\n')
 }
 
 inherit systemd
-
-SYSTEMD_SERVICE_${PN} = "cloudconnector.service"
-SYSTEMD_AUTO_ENABLE_${PN} = "enable"

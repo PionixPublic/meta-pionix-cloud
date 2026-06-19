@@ -4,7 +4,7 @@ Used at build time by cloudconnector-install.bbclass to fetch the cloud \
 connector binary and plugins from an OCI registry."
 HOMEPAGE = "https://oras.land"
 LICENSE = "Apache-2.0"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=86d3f3a95c324c9479bd8986968f4327"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=019fcb726ce54798fc2e56a02520dae8"
 
 inherit native
 
