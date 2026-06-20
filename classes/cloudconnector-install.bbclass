@@ -285,12 +285,13 @@ python do_install() {
         os.chmod(rules_dir, 0o700)
         subprocess.check_call(['chown', 'polkitd:root', rules_dir])
 
-    # /usr/bin/cloud-connector wrapper: binary on PATH with --config baked in.
+    # /usr/bin/cloud-connector wrapper: puts the binary on PATH so the client
+    # subcommands (status, ping, get-config, plugin actions) are reachable.
     wrapper_dir = os.path.join(destdir, 'usr', 'bin')
     os.makedirs(wrapper_dir, exist_ok=True)
     wrapper_path = os.path.join(wrapper_dir, 'cloud-connector')
     with open(wrapper_path, 'w') as f:
-        f.write('#!/bin/sh\nexec %s/cloud-connector --config %s "$@"\n' % (cc_dir, cc_config_path))
+        f.write('#!/bin/sh\nexec %s/cloud-connector "$@"\n' % cc_dir)
     os.chmod(wrapper_path, 0o755)
 
     # The TLS credentials dir is not created here: under /var/lib it is

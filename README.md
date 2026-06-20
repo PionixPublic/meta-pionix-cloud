@@ -62,7 +62,7 @@ to ship it.
 | `{cloud_connector.directory}/` | Binary and bundled files; entrypoint marked executable |
 | `{plugins.directory}/{qualified-oci-name}/` | Each plugin's files |
 | `{cloud_connector.config_path}` (default `{cloud_connector.directory}/cloud-connector.yaml`) | Your config, copied verbatim |
-| `/usr/bin/cloud-connector` | Wrapper that runs the binary with `--config` set |
+| `/usr/bin/cloud-connector` | Wrapper that puts the binary on `PATH` for the client subcommands (`status`, `ping`, `get-config`, plugin actions) |
 | `${systemd_unitdir}/system/cloud-connector.service` | systemd unit (auto-enabled) |
 | `/etc/tmpfiles.d/cloud-connector-everest.conf` | EVerest config-dir grant, when an EVerest plugin is present |
 
