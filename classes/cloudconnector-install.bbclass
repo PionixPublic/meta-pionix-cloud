@@ -102,12 +102,15 @@ python __anonymous() {
                           .get('client_credentials', {})
                           .get('directory', '/etc/mosquitto'))
 
-    # StateDirectory= provisions only paths under /var/lib (owned by the service
-    # user at runtime). Outside that tree the integrator owns the dir; warn.
+    # Provision the service's top-level state dir under /var/lib (owned by the
+    # service user at runtime). Use the first path segment, not the full creds
+    # path: systemd leaves intermediate dirs root-owned, so provisioning the
+    # leaf would block plugins from creating sibling subdirs (e.g. remote-ssh)
+    # under it. Outside /var/lib the integrator owns the dir; warn.
     state_prefix = '/var/lib/'
     state_rel = ''
     if client_creds_dir.startswith(state_prefix):
-        state_rel = client_creds_dir[len(state_prefix):].strip('/')
+        state_rel = client_creds_dir[len(state_prefix):].strip('/').split('/')[0]
     if not state_rel:
         bb.warn(
             "cloud-connector: client_credentials.directory '%s' is not under "
@@ -286,7 +289,10 @@ python do_install() {
         subprocess.check_call(['chown', 'polkitd:root', rules_dir])
 
     # /usr/bin/cloud-connector wrapper: puts the binary on PATH so the client
-    # subcommands (status, ping, get-config, plugin actions) are reachable.
+    # subcommands (status, ping, get-config, plugin actions) are reachable. The
+    # CLI is subcommand-based (clap); --config belongs to `daemon start` only
+    # (the systemd unit passes it), so it must NOT be baked in here or it would
+    # break every client subcommand.
     wrapper_dir = os.path.join(destdir, 'usr', 'bin')
     os.makedirs(wrapper_dir, exist_ok=True)
     wrapper_path = os.path.join(wrapper_dir, 'cloud-connector')
