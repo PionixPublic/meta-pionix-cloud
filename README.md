@@ -107,7 +107,7 @@ The service runs unprivileged, so it cannot reboot the device on its own — for
 example after an OTA update. logind authorizes reboots for `uid 0` only unless
 polkit says otherwise.
 
-The `polkit-reboot` PACKAGECONFIG (enabled by default) installs a polkit rule
+The `polkit-reboot` PACKAGECONFIG (always on by default) installs a polkit rule
 that lets the `cloud-connector` user call logind's reboot actions, and pulls
 `polkit` into the image. polkit only builds when its distro feature is enabled:
 
@@ -116,14 +116,31 @@ DISTRO_FEATURES:append = " polkit "
 ```
 
 The service runs `cloud_connector.runtime.reboot_command` from your
-`cloud-connector.yaml` (default `reboot`). On Raspberry Pi + RAUC, point it at a
-`tryboot` wrapper so the update boots the new slot.
+`cloud-connector.yaml`; unset, it falls back to a raw sysrq reboot instead of
+logind. On Raspberry Pi + RAUC, point it at a `tryboot` wrapper.
 
-Disable the grant if your image authorizes reboots another way (running as root,
-or `CAP_SYS_BOOT`):
+Unlike `rauc-dbus-access` below, this can't be derived from the config —
+`reboot_command` is a free-form shell string. Disable the grant only if your
+image authorizes reboots another way (root, or `CAP_SYS_BOOT`):
 
 ```
 PACKAGECONFIG:remove:pn-cloudconnector = "polkit-reboot"
+```
+
+### RAUC OTA access
+
+RAUC's own default D-Bus policy restricts its mutating methods (`InstallBundle`,
+`Mark`) to root. The `rauc-dbus-access` PACKAGECONFIG installs a D-Bus policy
+granting the unprivileged `cloud-connector` user access to
+`de.pengutronix.rauc.Installer`, needed by the rauc-updater plugin.
+
+Unlike `polkit-reboot`, this defaults on exactly when the `rauc-updater`
+plugin is enabled in the config. Override explicitly if needed:
+
+```
+PACKAGECONFIG:remove:pn-cloudconnector = "rauc-dbus-access"
+# or, to force it on regardless of the config:
+PACKAGECONFIG:append:pn-cloudconnector = " rauc-dbus-access"
 ```
 
 ## Registry credentials

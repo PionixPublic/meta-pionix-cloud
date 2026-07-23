@@ -81,16 +81,21 @@ python __anonymous() {
         if target and target not in everest_dirs:
             everest_dirs.append(target)
 
+    # Whether a plugin (matched by OCI basename, not user-chosen id) is enabled.
+    def plugin_enabled(basename):
+        return any(
+            lib.get('enabled', False)
+            and lib.get('source', {}).get('name', '').rsplit('/', 1)[-1].split(':')[0]
+                == basename
+            for lib in plugins_cfg.get('libraries', [])
+        )
+
     # The systemd plugin reads the journal (needs the systemd-journal group).
-    # Grant it via SupplementaryGroups= only when enabled. Match the OCI image
-    # basename, not the user-chosen id.
-    systemd_plugin_enabled = any(
-        lib.get('enabled', False)
-        and lib.get('source', {}).get('name', '').rsplit('/', 1)[-1].split(':')[0]
-            == 'cc-plugin-systemd'
-        for lib in plugins_cfg.get('libraries', [])
-    )
-    d.setVar('SYSTEMD_JOURNAL_ACCESS', '1' if systemd_plugin_enabled else '')
+    # Grant it via SupplementaryGroups= only when enabled.
+    d.setVar('SYSTEMD_JOURNAL_ACCESS', '1' if plugin_enabled('cc-plugin-systemd') else '')
+
+    # Drives the rauc-dbus-access PACKAGECONFIG default in cloudconnector_%.bb.
+    d.setVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED', '1' if plugin_enabled('cc-plugin-rauc-updater') else '')
 
     creds = inst.get('registry_creds', {})
     auths = creds.get('auths', {})
@@ -137,16 +142,42 @@ python __anonymous() {
 # ── Fetch OCI artifacts ───────────────────────────────────────────────────────
 # Separate task so the standard do_fetch/do_unpack still handle file:// SRC_URI.
 python do_fetch_oci() {
-    import json, os, subprocess
+    import json, os, shutil, subprocess
 
     workdir = d.getVar('WORKDIR')
 
-    # Write auth config scoped to WORKDIR so we never touch ~/.docker/config.json.
+    # Registry auth, scoped to WORKDIR so we never touch a global ~/.docker.
+    # Two sources, in priority order:
+    #   1. registry_creds embedded in the config (legacy; keeps a token in the
+    #      config YAML).
+    #   2. CLOUDCONNECTOR_REGISTRY_AUTH_FILE — a docker/oras auth file on the
+    #      build host (e.g. from `oras login`). Lets the config stay secret-free
+    #      and live in git.
     auths = json.loads(d.getVar('REGISTRY_AUTHS_JSON') or '{}')
+    auth_file = d.getVar('CLOUDCONNECTOR_REGISTRY_AUTH_FILE')
     docker_cfg_dir = os.path.join(workdir, '.docker')
     os.makedirs(docker_cfg_dir, exist_ok=True)
-    with open(os.path.join(docker_cfg_dir, 'config.json'), 'w') as f:
-        json.dump({'auths': auths}, f)
+    docker_cfg = os.path.join(docker_cfg_dir, 'config.json')
+    if auths:
+        with open(docker_cfg, 'w') as f:
+            json.dump({'auths': auths}, f)
+    elif auth_file and os.path.isfile(auth_file):
+        shutil.copyfile(auth_file, docker_cfg)
+    else:
+        if auth_file:
+            bb.warn("cloud-connector: CLOUDCONNECTOR_REGISTRY_AUTH_FILE does not "
+                    "exist: %s — falling back to anonymous pulls." % auth_file)
+        else:
+            bb.warn("cloud-connector: no registry credentials configured — pulls "
+                    "from private registries will fail with HTTP 401. Run "
+                    "`oras login` and set CLOUDCONNECTOR_REGISTRY_AUTH_FILE.")
+        with open(docker_cfg, 'w') as f:
+            json.dump({'auths': {}}, f)
+
+    # The config.json may hold a registry token. copyfile/open create it under
+    # the build umask (often 0022, i.e. world-readable); tighten to 0600 so no
+    # other local user can read the credential out of WORKDIR.
+    os.chmod(docker_cfg, 0o600)
 
     env = dict(os.environ)
     env['DOCKER_CONFIG'] = docker_cfg_dir
@@ -159,10 +190,14 @@ python do_fetch_oci() {
 
     def oras_pull(ref, dest):
         os.makedirs(dest, exist_ok=True)
-        subprocess.check_call(
+        result = subprocess.run(
             ['oras', 'pull', '--platform', platform, '--output', dest, ref],
             env=env,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+        if result.returncode != 0:
+            bb.fatal("oras pull failed for %s (platform %s):\n%s" % (ref, platform, result.stderr.strip()))
 
     # Cloud-connector binary and libs.
     oras_pull(d.getVar('CC_REF'), os.path.join(workdir, 'cc'))
@@ -182,7 +217,7 @@ do_fetch_oci[network] = "1"
 # ── Install ───────────────────────────────────────────────────────────────────
 
 python do_install() {
-    import json, os, shutil
+    import json, os, shutil, subprocess
 
     workdir  = d.getVar('WORKDIR')
     destdir  = d.getVar('D')
@@ -244,10 +279,16 @@ python do_install() {
         install_flat(plugin_src, plugin_dest)
         chmod_entrypoint(plugin_src, plugin_dest, qualified_name)
 
-    # Config YAML → cc_config_path
+    # Config YAML → cc_config_path. Copy contents only (copyfile, NOT copy2):
+    # the source may be 0600 root-owned, which the unprivileged service user
+    # cannot read. Force root:cloud-connector 0640 so the daemon reads it via
+    # its group while the secrets it carries (registry auths, TLS material)
+    # stay off world-readable.
     cfg_dst = os.path.join(destdir, cc_config_path.lstrip('/'))
     os.makedirs(os.path.dirname(cfg_dst), exist_ok=True)
-    shutil.copy2(cfg_file, cfg_dst)
+    shutil.copyfile(cfg_file, cfg_dst)
+    os.chmod(cfg_dst, 0o640)
+    subprocess.check_call(['chown', 'root:cloud-connector', cfg_dst])
 
     # systemd unit → ${systemd_unitdir}/system/
     unit_src = os.path.join(workdir, 'cloud-connector.service')
@@ -277,7 +318,6 @@ python do_install() {
 
     # polkit reboot rule (polkit-reboot PACKAGECONFIG only).
     if 'polkit-reboot' in (d.getVar('PACKAGECONFIG') or '').split():
-        import subprocess
         rule_src = os.path.join(workdir, '10-cloud-connector-reboot.rules')
         sysconfdir = d.getVar('sysconfdir')
         rules_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'polkit-1', 'rules.d')

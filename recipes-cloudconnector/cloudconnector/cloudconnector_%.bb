@@ -11,13 +11,19 @@ PV = "0.1.0"
 
 SRC_URI = "file://cloud-connector.service \
            file://10-cloud-connector-reboot.rules \
+           file://dbus-cloudconnector-rauc.conf \
            "
 
-# polkit-reboot: install a polkit rule authorizing the unprivileged service user
-# to reboot via logind (needed after an OTA). Default on; remove it if the image
-# authorizes reboots another way (root or CAP_SYS_BOOT).
-PACKAGECONFIG ??= "polkit-reboot"
+# polkit-reboot: lets the unprivileged user reboot via logind. Always on;
+# reboot_command is a free-form shell string, so unlike rauc-dbus-access below
+# this can't be derived from the config. Remove it if reboots are authorized
+# another way (root or CAP_SYS_BOOT).
+PACKAGECONFIG ??= "polkit-reboot ${@'rauc-dbus-access' if d.getVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED') else ''}"
 PACKAGECONFIG[polkit-reboot] = ",,,polkit"
+
+# rauc-dbus-access: D-Bus policy for RAUC's Installer interface (root-only by
+# default). Defaults on iff the rauc-updater plugin is enabled in the config.
+PACKAGECONFIG[rauc-dbus-access] = ""
 
 DEPENDS = "oras-native python3-pyyaml-native"
 
@@ -36,8 +42,25 @@ FILES:${PN} = " \
     ${sysconfdir}/tmpfiles.d/cloud-connector-everest.conf \
 "
 
-# Installed only under the polkit-reboot PACKAGECONFIG; unlisted paths are fine.
+# Installed only under their respective PACKAGECONFIG flags; unlisted paths are fine.
 FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/10-cloud-connector-reboot.rules"
+FILES:${PN} += "${sysconfdir}/dbus-1/system.d/dbus-cloudconnector-rauc.conf"
+
+python do_install:append() {
+    import os
+    import shutil
+
+    if 'rauc-dbus-access' in (d.getVar('PACKAGECONFIG') or '').split():
+        workdir = d.getVar('WORKDIR')
+        destdir = d.getVar('D')
+        sysconfdir = d.getVar('sysconfdir')
+        policy_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'dbus-1', 'system.d')
+        os.makedirs(policy_dir, exist_ok=True)
+        shutil.copy2(
+            os.path.join(workdir, 'dbus-cloudconnector-rauc.conf'),
+            os.path.join(policy_dir, 'dbus-cloudconnector-rauc.conf'),
+        )
+}
 
 GROUPADD_PARAM:${PN} = "-r cloud-connector"
 USERADD_PARAM:${PN} = "-r -g cloud-connector -s /sbin/nologin -d /nonexistent cloud-connector"
