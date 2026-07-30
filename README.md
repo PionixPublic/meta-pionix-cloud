@@ -55,6 +55,47 @@ bitbake cloudconnector
 Add `cloudconnector` to your image (e.g. `IMAGE_INSTALL:append = " cloudconnector"`)
 to ship it.
 
+## Pre-release channel
+
+The `kirkstone` and `scarthgap` branches only move when a Cloud Connector
+release is tagged. To try layer changes *before* a release, use the pre-release
+branches, which track the upstream `main`:
+
+| Branch | Content |
+|---|---|
+| `kirkstone` / `scarthgap` | latest tagged release |
+| `kirkstone-next` / `scarthgap-next` | current upstream `main` — unreleased |
+
+```
+git clone -b kirkstone-next https://github.com/PionixPublic/meta-pionix-cloud.git
+```
+
+An unreleased layer generally expects the artifacts built from the same `main`,
+so point the default tag at the rolling `main` build instead of `stable`:
+
+```yaml
+device:
+  installation:
+    tag: "main"
+```
+
+This is a testing channel, not a release. Three things to know:
+
+- **Nothing here is reproducible.** Both the `-next` branch and the `main`
+  artifact tag are mutable and move whenever upstream `main` advances — the same
+  build run twice can produce different content. Once you need a fixed snapshot,
+  pin a digest (see [Pinning versions](#pinning-versions)); the branch is still
+  a convenient way to *find* the layer revision you want to pin against.
+- **`PV` is not bumped.** A `-next` build reports the last released version, so
+  it is indistinguishable from the release by package version alone. Don't ship
+  a `-next` build to a fleet.
+- **Switching back is cheap.** `-next` is a fast-forward of its release branch,
+  so moving to `kirkstone` is an ordinary checkout, not a history rewrite.
+
+`git log` on a `-next` branch shows the upstream commits verbatim (message,
+author and date are preserved), so you can see exactly which changes you picked
+up relative to the release.
+
 ## Install layout
 
 | Path | Content |
