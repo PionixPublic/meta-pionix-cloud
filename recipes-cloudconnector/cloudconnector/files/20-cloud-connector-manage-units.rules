@@ -1,0 +1,27 @@
+// Authorize the unprivileged 'cloud-connector' user to restart systemd units,
+// so the systemd plugin can service a cloud restart request.
+//
+// Any unit, but only the restart verb.
+//
+// Not restricted to a unit list: the cloud decides which service to restart, and
+// that decision is authorized in the cloud (per-charger `can_restart_service`)
+// rather than on the device. Pinning a list here would mean shipping an image
+// change every time it moves.
+//
+// The verb check keeps start, stop, kill and reload out of the grant. systemd
+// passes the job type as the `verb` detail of manage-units: RestartUnit maps to
+// "restart", TryRestartUnit to "try-restart", ReloadOrRestartUnit to
+// "reload-or-restart". Confirmed in the systemd shipped by both supported Yocto
+// releases, 250.14 (kirkstone) and 255.22 (scarthgap), where
+// bus_verify_manage_units_async_full() in src/core/dbus-util.c passes
+// { "unit", u->id, "verb", verb }.
+//
+// The plugin's capability probe sends the same `verb` detail so that it
+// evaluates this branch rather than a different one.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "cloud-connector" &&
+        action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("verb") == "restart") {
+        return polkit.Result.YES;
+    }
+});

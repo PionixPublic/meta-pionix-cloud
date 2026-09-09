@@ -97,6 +97,9 @@ python __anonymous() {
     # Drives the rauc-dbus-access PACKAGECONFIG default in cloudconnector_%.bb.
     d.setVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED', '1' if plugin_enabled('cc-plugin-rauc-updater') else '')
 
+    # Drives the polkit-manage-units PACKAGECONFIG default in cloudconnector_%.bb.
+    d.setVar('CLOUDCONNECTOR_SYSTEMD_PLUGIN_ENABLED', '1' if plugin_enabled('cc-plugin-systemd') else '')
+
     creds = inst.get('registry_creds', {})
     auths = creds.get('auths', {})
 
@@ -316,13 +319,20 @@ python do_install() {
                     .replace('@STATE_DIRECTORY_BLOCK@', state_block)
                     .replace('@SUPPLEMENTARY_GROUPS_BLOCK@', supp_groups_block))
 
-    # polkit reboot rule (polkit-reboot PACKAGECONFIG only).
-    if 'polkit-reboot' in (d.getVar('PACKAGECONFIG') or '').split():
-        rule_src = os.path.join(workdir, '10-cloud-connector-reboot.rules')
+    # polkit rules, each under its own PACKAGECONFIG flag.
+    polkit_rules = []
+    packageconfig = (d.getVar('PACKAGECONFIG') or '').split()
+    if 'polkit-reboot' in packageconfig:
+        polkit_rules.append('10-cloud-connector-reboot.rules')
+    if 'polkit-manage-units' in packageconfig:
+        polkit_rules.append('20-cloud-connector-manage-units.rules')
+
+    if polkit_rules:
         sysconfdir = d.getVar('sysconfdir')
         rules_dir = os.path.join(destdir, sysconfdir.lstrip('/'), 'polkit-1', 'rules.d')
         os.makedirs(rules_dir, exist_ok=True)
-        shutil.copy2(rule_src, os.path.join(rules_dir, '10-cloud-connector-reboot.rules'))
+        for rule in polkit_rules:
+            shutil.copy2(os.path.join(workdir, rule), os.path.join(rules_dir, rule))
         # rules.d is shared with polkit; match its 0700 polkitd:root or rpm
         # rejects the conflicting dir metadata.
         os.chmod(rules_dir, 0o700)

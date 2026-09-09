@@ -11,6 +11,7 @@ PV = "0.3.2"
 
 SRC_URI = "file://cloud-connector.service \
            file://10-cloud-connector-reboot.rules \
+           file://20-cloud-connector-manage-units.rules \
            file://dbus-cloudconnector-rauc.conf \
            "
 
@@ -18,8 +19,16 @@ SRC_URI = "file://cloud-connector.service \
 # reboot_command is a free-form shell string, so unlike rauc-dbus-access below
 # this can't be derived from the config. Remove it if reboots are authorized
 # another way (root or CAP_SYS_BOOT).
-PACKAGECONFIG ??= "polkit-reboot ${@'rauc-dbus-access' if d.getVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED') else ''}"
+# polkit-manage-units: lets the unprivileged user restart systemd units (the
+# restart verb only, on any unit), which the systemd plugin needs for
+# cloud-initiated service restarts. Defaults on iff that plugin is enabled in the
+# config. Leaving it off degrades cleanly: the plugin probes polkit and withholds
+# the capability when the rule is absent.
+PACKAGECONFIG ??= "polkit-reboot \
+                   ${@'rauc-dbus-access' if d.getVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED') else ''} \
+                   ${@'polkit-manage-units' if d.getVar('CLOUDCONNECTOR_SYSTEMD_PLUGIN_ENABLED') else ''}"
 PACKAGECONFIG[polkit-reboot] = ",,,polkit"
+PACKAGECONFIG[polkit-manage-units] = ",,,polkit"
 
 # rauc-dbus-access: D-Bus policy for RAUC's Installer interface (root-only by
 # default). Defaults on iff the rauc-updater plugin is enabled in the config.
@@ -44,6 +53,7 @@ FILES:${PN} = " \
 
 # Installed only under their respective PACKAGECONFIG flags; unlisted paths are fine.
 FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/10-cloud-connector-reboot.rules"
+FILES:${PN} += "${sysconfdir}/polkit-1/rules.d/20-cloud-connector-manage-units.rules"
 FILES:${PN} += "${sysconfdir}/dbus-1/system.d/dbus-cloudconnector-rauc.conf"
 
 python do_install:append() {
@@ -69,7 +79,7 @@ USERADD_PACKAGES = "${PN}"
 
 # Declare polkitd (matching polkit's own definition) so do_install can chown the
 # shared rules.d to polkitd:root and avoid an rpm dir-ownership conflict.
-USERADD_PARAM:${PN} += "${@bb.utils.contains('PACKAGECONFIG', 'polkit-reboot', '; --system --no-create-home --user-group --home-dir ${sysconfdir}/polkit-1 polkitd', '', d)}"
+USERADD_PARAM:${PN} += "${@bb.utils.contains_any('PACKAGECONFIG', 'polkit-reboot polkit-manage-units', '; --system --no-create-home --user-group --home-dir ${sysconfdir}/polkit-1 polkitd', '', d)}"
 
 # Pre-compiled, fully static musl binaries: no .so consumed or provided, no
 # source for debug info, and not to be rewritten (may be digest-pinned). Disable
