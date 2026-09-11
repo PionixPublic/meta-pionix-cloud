@@ -12,6 +12,10 @@
 
 CLOUDCONNECTOR_CONFIG_FILE ?= ""
 
+# Appended verbatim to the derived ReadWritePaths= list, for a writable path the
+# config cannot name (a hook script's own spool dir, say).
+CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA ?= ""
+
 # Derive all install-time values from the config at parse time.
 python __anonymous() {
     import json
@@ -69,24 +73,39 @@ python __anonymous() {
             src['_qualified_name'] = '%s/%s' % (registry, name)
             src['_ref'] = '%s/%s:%s' % (registry, name, tag_or_digest)
 
+    # Identity for matching a library against a known plugin: the OCI basename,
+    # never the user-chosen id.
+    def oci_basename(lib):
+        return lib.get('source', {}).get('name', '').rsplit('/', 1)[-1].split(':')[0]
+
     # EVerest config dirs needing group-write (the daemon swaps a symlink there),
     # derived per plugin from config_symlink/config_dir.
     everest_dirs = []
+    # Writable paths a plugin's own config names, for the unit's ReadWritePaths=.
+    plugin_rw_paths = []
     for lib in plugins_cfg.get('libraries', []):
-        ev = (lib.get('config') or {}).get('everest')
-        if not isinstance(ev, dict):
-            continue
-        symlink = ev.get('config_symlink')
-        target = os.path.dirname(symlink) if symlink else ev.get('config_dir')
-        if target and target not in everest_dirs:
-            everest_dirs.append(target)
+        lib_cfg = lib.get('config') or {}
+        ev = lib_cfg.get('everest')
+        if isinstance(ev, dict):
+            symlink = ev.get('config_symlink')
+            target = os.path.dirname(symlink) if symlink else ev.get('config_dir')
+            if target and target not in everest_dirs:
+                everest_dirs.append(target)
+            # Both are directories, not files. The plugin only reads them today,
+            # but they sit outside the state dir, so any later write (staging an
+            # upload, pruning) would hit a read-only mount.
+            for key in ('packet_capture_path', 'ocpp_session_log_path'):
+                if ev.get(key):
+                    plugin_rw_paths.append(ev[key])
+        # The hook's cwd; matched by basename so a same-named key on some other
+        # plugin cannot widen the sandbox.
+        if oci_basename(lib) == 'cc-plugin-generic-updater' and lib_cfg.get('working_directory'):
+            plugin_rw_paths.append(lib_cfg['working_directory'])
 
-    # Whether a plugin (matched by OCI basename, not user-chosen id) is enabled.
+    # Whether a plugin is enabled.
     def plugin_enabled(basename):
         return any(
-            lib.get('enabled', False)
-            and lib.get('source', {}).get('name', '').rsplit('/', 1)[-1].split(':')[0]
-                == basename
+            lib.get('enabled', False) and oci_basename(lib) == basename
             for lib in plugins_cfg.get('libraries', [])
         )
 
@@ -129,6 +148,38 @@ python __anonymous() {
             "cloud-connector user yourself." % client_creds_dir
         )
     d.setVar('STATE_DIRECTORY_REL', state_rel)
+
+    # ReadWritePaths= for the unit: every path the daemon or a plugin writes,
+    # derived here so ProtectSystem=strict needs no per-install drop-in.
+    db_cfg = cfg.get('cloud_connector', {}).get('database') or {}
+    rw_paths = [db_cfg.get('directory') or '/var/lib/cloud-connector']
+    if db_cfg.get('backup_dir'):
+        rw_paths.append(db_cfg['backup_dir'])
+    if state_rel:
+        # Already writable via StateDirectory=; listed so the unit is readable
+        # without cross-referencing it.
+        rw_paths.append(state_prefix + state_rel)
+    else:
+        # Outside /var/lib/, so StateDirectory= does not cover it (warned above).
+        rw_paths.append(client_creds_dir)
+    rw_paths += everest_dirs
+    rw_paths += plugin_rw_paths
+
+    read_write_paths = []
+    for path in rw_paths:
+        path = path.rstrip('/')
+        # /tmp is granted unconditionally below, so a path inside it adds only noise.
+        if not path or path == '/tmp' or path.startswith('/tmp/'):
+            continue
+        if path not in read_write_paths:
+            read_write_paths.append(path)
+
+    # '-' so a path only created on first use does not fail the unit at start.
+    # /tmp is unprefixed: plugin spool files and the local broker socket land
+    # there and it always exists.
+    rw = ['-' + path for path in read_write_paths] + ['/tmp']
+    rw += (d.getVar('CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA') or '').split()
+    d.setVar('CC_READ_WRITE_PATHS', ' '.join(rw))
 
     cc_config_path = cc_inst.get('config_path') or (cc_dir + '/cloud-connector.yaml')
 
@@ -311,13 +362,15 @@ python do_install() {
         supp_groups_block = 'SupplementaryGroups=systemd-journal'
     else:
         supp_groups_block = ''
+    rw_paths_block = 'ReadWritePaths=%s' % d.getVar('CC_READ_WRITE_PATHS')
     with open(unit_dst) as f:
         unit = f.read()
     with open(unit_dst, 'w') as f:
         f.write(unit.replace('@CC_DIRECTORY@', cc_dir)
                     .replace('@CC_CONFIG_PATH@', cc_config_path)
                     .replace('@STATE_DIRECTORY_BLOCK@', state_block)
-                    .replace('@SUPPLEMENTARY_GROUPS_BLOCK@', supp_groups_block))
+                    .replace('@SUPPLEMENTARY_GROUPS_BLOCK@', supp_groups_block)
+                    .replace('@READ_WRITE_PATHS_BLOCK@', rw_paths_block))
 
     # polkit rules, each under its own PACKAGECONFIG flag.
     polkit_rules = []

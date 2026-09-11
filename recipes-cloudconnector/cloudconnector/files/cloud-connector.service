@@ -14,6 +14,42 @@ Group=cloud-connector
 ExecStart=@CC_DIRECTORY@/cloud-connector daemon start --config @CC_CONFIG_PATH@
 Restart=on-failure
 RestartSec=5
+# So `systemctl show -p MemoryCurrent` answers on the device. The limits are on cgroup
+# accounting, not PSS: settled PSS is 12.9 MiB, but startup peaks at 70 MiB (memory.peak) in
+# the --cc-validate-config child, so a limit near the settled figure would kill startup.
+MemoryAccounting=yes
+MemoryHigh=96M
+MemoryMax=128M
+# 21 threads measured with six plugins; the ceiling adds two more, remote-ssh's 32 concurrent
+# sessions (MAX_REGISTERED_SESSIONS) and the journalctl+curl of one log upload.
+TasksMax=128
+# Widening backoff instead of a start limit: a start limit would stop retrying, and a connector
+# that has given up is the one failure a human has to travel to clear.
+RestartSteps=6
+RestartMaxDelaySec=120
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+# Derived from cloud-connector.yaml by cloudconnector-install.bbclass: the state database
+# directory, the credentials dir when it sits outside /var/lib/, each EVerest config dir
+# everest-plugin swaps its symlink in, the session-log and generic-updater hook dirs the
+# plugin configs name, /tmp, and CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA.
+@READ_WRITE_PATHS_BLOCK@
+# Not PrivateTmp=: the packaged configs put the local broker socket in /tmp, which a private
+# /tmp would hide from mqtt-bridge and everest-plugin.
+#
+# ProtectKernelTunables= also seals /proc/sysrq-trigger, reboot.rs's fallback when
+# runtime.reboot_command is unset — it is 0200 root:root, so that write already failed.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cloud-connector

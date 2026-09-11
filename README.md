@@ -142,6 +142,54 @@ non-recursive, so the config files and EVerest's own state keep their ownership.
 The directory and the symlink themselves must already exist — typically shipped
 by your EVerest recipe.
 
+### Sandboxing
+
+The unit runs the service under `ProtectSystem=strict`, `ProtectHome=yes`,
+`NoNewPrivileges=yes`, `RestrictSUIDSGID=yes`, an empty `CapabilityBoundingSet=`
+and the `Protect*`/`Restrict*` set, bounded by `MemoryHigh=96M`, `MemoryMax=128M`
+and `TasksMax=128`. The filesystem is read-only apart from the `StateDirectory=`
+and `ReadWritePaths=`, which the class derives from your `cloud-connector.yaml`:
+
+- `cloud_connector.database.directory` (default `/var/lib/cloud-connector`) and
+  its `backup_dir` when set,
+- the credentials directory, when it sits outside `/var/lib/` and so is not
+  already covered by `StateDirectory=`,
+- every EVerest config dir (`config.everest.config_symlink`'s parent, or
+  `config_dir`),
+- `config.everest.packet_capture_path` and `ocpp_session_log_path`,
+- the `cc-plugin-generic-updater` `working_directory`,
+- `/tmp`.
+
+Each path but `/tmp` is prefixed `-`, so one that does not exist yet does not
+fail the unit at start; paths under `/tmp` are dropped as already covered.
+
+A writable path the config cannot name — a hook script's own spool directory,
+say — goes in `CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA`, appended verbatim:
+
+```
+CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA = "-/srv/my-hook-spool"
+```
+
+A drop-in still works for anything neither the config nor a recipe knows:
+
+```
+# /etc/systemd/system/cloud-connector.service.d/10-paths.conf
+[Service]
+ReadWritePaths=/srv/my-plugin
+```
+
+`PrivateTmp=` is deliberately unset, because a config pointing the local broker
+socket at `/tmp/mosquitto.socket` needs the host's `/tmp`.
+
+**Remote SSH.** A relay session's shell is a child of the service, so it inherits
+all of the above: no `sudo` (`NoNewPrivileges=`), no `dmesg` or `sysctl -w`, no
+`/home` (`ProtectHome=`) — so the default `remote_cwd` of `/home/<remote_user>`
+does not exist and the shell falls back to the daemon's working directory — and
+the same derived write paths, which a session needing more extends with
+`CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA` or the drop-in. It shares the cgroup too,
+so a heavy command in a session can hit `MemoryMax=128M` or `TasksMax=128` and
+take the connector down with it.
+
 ### Rebooting
 
 The service runs unprivileged, so it cannot reboot the device on its own — for
