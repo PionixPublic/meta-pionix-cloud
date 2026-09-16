@@ -66,6 +66,10 @@ branches, which track the upstream `main`:
 | `kirkstone` / `scarthgap` | latest tagged release |
 | `kirkstone-next` / `scarthgap-next` | current upstream `main` — unreleased |
 
+Each release is also tagged `vX.Y.Z` — the same version as the OCI artifacts,
+on the commit both release branches point at — so a layer manifest can pin
+`v0.3.2` instead of a branch or a hash.
+
 ```
 git clone -b kirkstone-next https://github.com/PionixPublic/meta-pionix-cloud.git
 ```
