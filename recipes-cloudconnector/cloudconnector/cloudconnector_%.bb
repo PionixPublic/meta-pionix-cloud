@@ -19,11 +19,12 @@ SRC_URI = "file://cloud-connector.service \
 # reboot_command is a free-form shell string, so unlike rauc-dbus-access below
 # this can't be derived from the config. Remove it if reboots are authorized
 # another way (root or CAP_SYS_BOOT).
-# polkit-manage-units: lets the unprivileged user restart systemd units (the
-# restart verb only, on any unit), which the systemd plugin needs for
-# cloud-initiated service restarts. Defaults on iff that plugin is enabled in the
-# config. Leaving it off degrades cleanly: the plugin probes polkit and withholds
-# the capability when the rule is absent.
+# polkit-manage-units: lets the unprivileged user act on systemd units — start,
+# stop, restart, reload and reset-failed on any unit, plus enabling and disabling
+# them at boot — which the systemd plugin needs for cloud-initiated service
+# actions. Defaults on iff that plugin is enabled in the config. Leaving it off
+# degrades cleanly: the plugin probes polkit per action group and withholds the
+# capabilities whose rule is absent.
 PACKAGECONFIG ??= "polkit-reboot \
                    ${@'rauc-dbus-access' if d.getVar('CLOUDCONNECTOR_RAUC_UPDATER_ENABLED') else ''} \
                    ${@'polkit-manage-units' if d.getVar('CLOUDCONNECTOR_SYSTEMD_PLUGIN_ENABLED') else ''}"

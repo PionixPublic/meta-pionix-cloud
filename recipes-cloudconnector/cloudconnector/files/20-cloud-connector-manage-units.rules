@@ -1,27 +1,64 @@
-// Authorize the unprivileged 'cloud-connector' user to restart systemd units,
-// so the systemd plugin can service a cloud restart request.
+// Authorize the unprivileged 'cloud-connector' user to act on systemd units, so
+// the systemd plugin can service a cloud service-action request.
 //
-// Any unit, but only the restart verb.
+// Any unit, but only the verbs the plugin implements.
 //
-// Not restricted to a unit list: the cloud decides which service to restart, and
-// that decision is authorized in the cloud (per-charger `can_restart_service`)
-// rather than on the device. Pinning a list here would mean shipping an image
-// change every time it moves.
+// Not restricted to a unit list: the cloud decides which service to act on, and
+// that decision is authorized in the cloud (per-charger `can_restart_service`,
+// `can_control_service`, `can_enable_service`) rather than on the device.
+// Pinning a list here would mean shipping an image change every time it moves.
 //
-// The verb check keeps start, stop, kill and reload out of the grant. systemd
-// passes the job type as the `verb` detail of manage-units: RestartUnit maps to
-// "restart", TryRestartUnit to "try-restart", ReloadOrRestartUnit to
-// "reload-or-restart". Confirmed in the systemd shipped by both supported Yocto
-// releases, 250.14 (kirkstone) and 255.22 (scarthgap), where
+// systemd passes the job type as the `verb` detail of manage-units, so the verb
+// check is what keeps kill, freeze, try-restart and reload-or-restart out of the
+// grant. Confirmed in the systemd shipped by both supported Yocto releases,
+// 250.14 (kirkstone) and 255.22 (scarthgap), where
 // bus_verify_manage_units_async_full() in src/core/dbus-util.c passes
-// { "unit", u->id, "verb", verb }.
+// { "unit", u->id, "verb", verb } and dbus-unit.c derives that verb from the job
+// type — "start", "stop", "restart", "reload" — or passes "reset-failed"
+// literally.
 //
-// The plugin's capability probe sends the same `verb` detail so that it
-// evaluates this branch rather than a different one.
+// A manage-units call that carries *no* verb is deliberately not granted:
+// StartTransientUnit takes that branch, and a transient unit is arbitrary code
+// as root.
+//
+// The plugin's capability probes send the same `verb` details so that they
+// evaluate this branch rather than a different one.
 polkit.addRule(function(action, subject) {
+    var VERBS = {
+        "start": true,
+        "stop": true,
+        "restart": true,
+        "reload": true,
+        "reset-failed": true
+    };
+
     if (subject.user == "cloud-connector" &&
         action.id == "org.freedesktop.systemd1.manage-units" &&
-        action.lookup("verb") == "restart") {
+        VERBS[action.lookup("verb")] === true) {
+        return polkit.Result.YES;
+    }
+});
+
+// Enabling and disabling units at boot.
+//
+// Separate from the rule above because it is a separate polkit action, which
+// means a device image can grant one without the other — and the plugin
+// advertises the two capabilities independently for exactly that reason.
+//
+// Note that manage-unit-files carries **no verb detail**: it covers enable,
+// disable, mask, unmask, link and preset alike, and there is no way to narrow it
+// here. What keeps masking off the table is that the plugin implements only
+// enable and disable, plus the cloud's own per-charger permission.
+//
+// reload-daemon is granted alongside it because `systemctl enable` reloads the
+// manager afterwards so the new .wants symlink also applies to the running boot.
+// The plugin treats a denied reload as non-fatal — the enablement is already
+// persisted, it just waits for the next boot — so removing this action degrades
+// rather than breaks.
+polkit.addRule(function(action, subject) {
+    if (subject.user == "cloud-connector" &&
+        (action.id == "org.freedesktop.systemd1.manage-unit-files" ||
+         action.id == "org.freedesktop.systemd1.reload-daemon")) {
         return polkit.Result.YES;
     }
 });
