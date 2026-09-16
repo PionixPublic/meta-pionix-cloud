@@ -15,8 +15,8 @@ ExecStart=@CC_DIRECTORY@/cloud-connector daemon start --config @CC_CONFIG_PATH@
 Restart=on-failure
 RestartSec=5
 # So `systemctl show -p MemoryCurrent` answers on the device. The limits are on cgroup
-# accounting, not PSS: settled PSS is 12.9 MiB, but startup peaks at 70 MiB (memory.peak) in
-# the --cc-validate-config child, so a limit near the settled figure would kill startup.
+# accounting, not PSS, and cover the daemon plus every plugin it spawns, so they sit well
+# above the daemon's own settled figure of 12.9 MiB.
 MemoryAccounting=yes
 MemoryHigh=96M
 MemoryMax=128M
