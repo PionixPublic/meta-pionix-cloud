@@ -209,8 +209,10 @@ DISTRO_FEATURES:append = " polkit "
 ```
 
 The service runs `cloud_connector.runtime.reboot_command` from your
-`cloud-connector.yaml`; unset, it falls back to a raw sysrq reboot instead of
-logind. On Raspberry Pi + RAUC, point it at a `tryboot` wrapper.
+`cloud-connector.yaml`. Hard reboot tries sysrq first and runs the command if
+sysrq is sealed; soft reboot runs the command directly. If unset, soft reboot
+uses raw sysrq instead of logind, and hard reboot has no fallback. On Raspberry
+Pi + RAUC, point it at a `tryboot` wrapper.
 
 Unlike `rauc-dbus-access` below, this can't be derived from the config —
 `reboot_command` is a free-form shell string. Disable the grant only if your

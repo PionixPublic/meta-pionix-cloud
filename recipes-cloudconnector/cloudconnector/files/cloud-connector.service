@@ -40,8 +40,8 @@ ProtectHome=yes
 # Not PrivateTmp=: the packaged configs put the local broker socket in /tmp, which a private
 # /tmp would hide from mqtt-bridge and everest-plugin.
 #
-# ProtectKernelTunables= also seals /proc/sysrq-trigger, reboot.rs's fallback when
-# runtime.reboot_command is unset — it is 0200 root:root, so that write already failed.
+# ProtectKernelTunables= also seals /proc/sysrq-trigger. Hard reboot falls back
+# to runtime.reboot_command when that write fails; configure it for this unit.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
