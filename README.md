@@ -64,6 +64,7 @@ branches, which track the upstream `main`:
 | Branch | Content |
 |---|---|
 | `kirkstone` / `scarthgap` | latest tagged release |
+| `kirkstone-X.Y` / `scarthgap-X.Y` | patch releases of an older minor `X.Y` |
 | `kirkstone-next` / `scarthgap-next` | current upstream `main` — unreleased |
 
 Each release is also tagged `vX.Y.Z` — the same version as the OCI artifacts,
