@@ -146,53 +146,83 @@ non-recursive, so the config files and EVerest's own state keep their ownership.
 The directory and the symlink themselves must already exist — typically shipped
 by your EVerest recipe.
 
-### Sandboxing
+### Trust model
 
-The unit runs the service under `ProtectSystem=strict`, `ProtectHome=yes`,
-`NoNewPrivileges=yes`, `RestrictSUIDSGID=yes`, an empty `CapabilityBoundingSet=`
-and the `Protect*`/`Restrict*` set, bounded by `MemoryHigh=96M`, `MemoryMax=128M`
-and `TasksMax=128`. The filesystem is read-only apart from the `StateDirectory=`
-and `ReadWritePaths=`, which the class derives from your `cloud-connector.yaml`:
+The service runs as the unprivileged `cloud-connector` account, with no systemd
+sandbox. Everything it starts runs as that account with its normal Unix rights:
+the plugins, remote SSH session shells, generic-updater hooks and
+`reboot_command`.
 
-- `cloud_connector.database.directory` (default `/var/lib/cloud-connector`) and
-  its `backup_dir` when set,
-- the credentials directory, when it sits outside `/var/lib/` and so is not
-  already covered by `StateDirectory=`,
-- every EVerest config dir (`config.everest.config_symlink`'s parent, or
-  `config_dir`),
-- `config.everest.packet_capture_path` and `ocpp_session_log_path`,
-- the `cc-plugin-generic-updater` `working_directory`,
-- `/tmp`.
+That account is the security boundary. It gets extra rights only from the
+grants this layer installs and from whatever you add yourself (groups, sudoers
+rules, polkit rules):
 
-Each path but `/tmp` is prefixed `-`, so one that does not exist yet does not
-fail the unit at start; paths under `/tmp` are dropped as already covered.
+| Grant | Installed when | Allows |
+|---|---|---|
+| logind reboot (polkit) | always (`polkit-reboot`) | Rebooting the device |
+| RAUC `Installer` (D-Bus) | rauc-updater plugin enabled | Installing bundles signed with your key |
+| `manage-units` (polkit) | systemd plugin enabled | Start, stop, restart, reload, reset-failed on any unit |
+| `manage-unit-files`, `reload-daemon` (polkit) | systemd plugin enabled | Enable and disable units; polkit cannot narrow this action, so it also allows linking a unit file from any path and starting it. Treat it as root. |
+| `systemd-journal` group | systemd plugin enabled | Reading every unit's journal |
+| EVerest config dir (group write) | EVerest plugin present | Switching the active EVerest config |
 
-A writable path the config cannot name — a hook script's own spool directory,
-say — goes in `CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA`, appended verbatim:
+Treat the `cloud-connector` account as privileged. Anyone who can open a remote
+SSH session, or run code in the connector, has its rights. The connector's own
+protections are upstream of the device: TLS with a validated server
+certificate, cloud-side authorization of every action, the plugins' allow-lists,
+and the peer-credential check on the local IPC socket.
+
+The unit keeps resource bounds so a runaway connector cannot starve EVerest:
+`MemoryHigh=96M` throttles it, `OOMScoreAdjust=500` makes it the kernel's first
+OOM victim, and `TasksMax=128` caps its processes. Session shells and hooks count
+against the same bounds.
+
+**Remote SSH.** A session's shell runs as `cloud-connector`. To let support
+sessions do more, grant that account what they need, for example a sudoers rule.
+The daemon gets the same rights, since it is the same account.
+
+### Hardening options
+
+None of these are on by default, because each one restricts something an
+integration may rely on. Pick the ones whose cost fits your device.
+
+| Option | Protects against | Costs |
+|---|---|---|
+| Leave out plugins you don't use | Their attack surface and grants | The cloud features they provide |
+| Drop the `polkit-manage-units` `PACKAGECONFIG` | The root-equivalent unit-file grant | Cloud service actions; the systemd plugin withholds them |
+| Set the plugins' allow-lists: remote-ssh `allowed_public_keys`, systemd `log_units` and `service_actions`, mqtt-bridge `allowed_topic_prefixes` | A compromised cloud account reaching beyond what you listed | Updating the list when the cloud side changes |
+| Narrow sudoers rules (named commands, not `ALL`) | A session or compromised connector getting full root | Support can only run the listed commands as root |
+| Sandbox drop-in (below) | Code execution in the connector escalating through setuid binaries, kernel namespace bugs, or writable system files | `sudo`/`su` in sessions and hooks; hooks writing outside the listed paths; containers in hooks; `dmesg` |
+| `MemoryMax=` drop-in | A connector leak growing past `MemoryHigh` | The kernel kills the whole service, sessions and running hooks included, when it is hit |
+| Egress firewall allowing only your cloud endpoints | Exfiltration and lateral movement from a compromised connector | Maintaining the endpoint list |
+
+A sandbox drop-in, to adapt. `ReadWritePaths=` must list every directory the
+connector or its hooks write: the database and credentials directories, the
+EVerest config directories, `packet_capture_path`, `ocpp_session_log_path`, the
+generic-updater `working_directory`, and `/tmp` for the local broker socket.
 
 ```
-CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA = "-/srv/my-hook-spool"
-```
-
-A drop-in still works for anything neither the config nor a recipe knows:
-
-```
-# /etc/systemd/system/cloud-connector.service.d/10-paths.conf
+# /etc/systemd/system/cloud-connector.service.d/50-hardening.conf
 [Service]
-ReadWritePaths=/srv/my-plugin
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=-/var/lib/cloud-connector -/etc/everest /tmp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 ```
 
-`PrivateTmp=` is deliberately unset, because a config pointing the local broker
-socket at `/tmp/mosquitto.socket` needs the host's `/tmp`.
-
-**Remote SSH.** A relay session's shell is a child of the service, so it inherits
-all of the above: no `sudo` (`NoNewPrivileges=`), no `dmesg` or `sysctl -w`, no
-`/home` (`ProtectHome=`) — so the default `remote_cwd` of `/home/<remote_user>`
-does not exist and the shell falls back to the daemon's working directory — and
-the same derived write paths, which a session needing more extends with
-`CLOUDCONNECTOR_READ_WRITE_PATHS_EXTRA` or the drop-in. It shares the cgroup too,
-so a heavy command in a session can hit `MemoryMax=128M` or `TasksMax=128` and
-take the connector down with it.
+Don't set `PrivateTmp=`: it hides the local broker socket in `/tmp` from
+mqtt-bridge and the EVerest plugin. Check the result with
+`systemd-analyze security cloud-connector.service`.
 
 ### Rebooting
 
