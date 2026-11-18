@@ -7,7 +7,7 @@ HOMEPAGE = "https://pionix.com"
 LICENSE = "CLOSED"
 
 # _%.bb yields PV="%", which is invalid for RPM packaging. Pin a real version.
-PV = "0.5.2"
+PV = "0.5.3"
 
 SRC_URI = "file://cloud-connector.service \
            file://10-cloud-connector-reboot.rules \
